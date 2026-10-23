@@ -2,7 +2,7 @@
 
 **Apple's iOS 16 running on a Xiaomi Mi 9T.**
 
-This project if a fork of the port IOS 16 to the Xiaomi Redmi Note 10 Pro (`sweet`, Qualcomm SM7150 / Snapdragon 732G) to work on Xiaomi  Mi 9T (`davinci`, Qualcomm SDM730 / Snapdragon 730). On top of it runs the **unmodified iOS 16.7.16 (20H392) userland of the iPhone X**: launchd, the system daemons, backboardd, SpringBoard and the stock apps.
+This project if a fork of the IOS 16 port to Xiaomi Redmi Note 10 Pro (`sweet`, Qualcomm SM7150 / Snapdragon 732G) to make it work on Xiaomi  Mi 9T (`davinci`, Qualcomm SDM730 / Snapdragon 730). It runs the **unmodified iOS 16.7.16 (20H392) userland of the iPhone X**: launchd, the system daemons, backboardd, SpringBoard and the stock apps.
 
 As of **2026-10-23** the phone boots to the **iOS home screen**. You can unlock it, open Settings, pull down Control Center and the notification center, and use the touchscreen and the hardware buttons. Rendering runs entirely on the CPU; there is no GPU driver.
 

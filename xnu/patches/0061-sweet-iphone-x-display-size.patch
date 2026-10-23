@@ -11,7 +11,7 @@
 + * screens (UIKit: "No status bar visual provider for screen", the red
 + * rdar://45025538 bar for 360x800 points). The display is therefore
 + * presented as the iPhone X panel, 1125x2436 (375x812 points @3x), and the
-+ * centered 1080x2400 part of it is shown on the 1080x2400 panel.
++ * centered 1080x2340 part of it is shown on the 1080x2340 panel.
 + * Boot-arg sweetfb_native=1 presents the real panel size instead.
 + */
 +#define SWEET_FB_LOGICAL_W              1125
@@ -104,9 +104,9 @@
 +	int native = 0;
 +	PE_parse_boot_argn("sweetfb_native", &native, sizeof(native));
 +	fLogicalW = native ? 1080 : 1125;
-+	fLogicalH = native ? 2400 : 2436;
++	fLogicalH = native ? 2340 : 2436;
 +	fOffX = (fLogicalW - 1080) / 2;
-+	fOffY = (fLogicalH - 2400) / 2;
++	fOffY = (fLogicalH - 2340) / 2;
  	/* The digitizer covers the main display (backboardd maps it 1:1). */
  	setProperty("DisplayIntegrated", kOSBooleanTrue);
  	setProperty("SurfaceWidth", (unsigned long long)(68 << 16), 32);	/* mm, 16.16 */

@@ -372,6 +372,30 @@ static uint32_t to_us(uint64_t ticks)
 
 void shim_main(uint64_t dtb)
 {
+#ifdef DAVINCI_DIAG_ONLY
+    stage = "davinci framebuffer";
+
+    con_clear(RED);
+    con_str("SHIM", "Xiaomi Mi 9T");
+    con_str("BOARD", "davinci / SM7150");
+    con_str("TEST", "Framebuffer write OK");
+    con_hex("DTB", dtb);
+    con_hex("MPIDR", rsr("mpidr_el1"));
+    con_hex("CNTFRQ", rsr("cntfrq_el0"));
+
+    /* Davinci UFS: read controller registers only */
+    con_hex2("UFS", "CAP=", rd32(0x01d84000UL),
+                    "VER=", rd32(0x01d84008UL));
+    con_hex2("UFS", "HCE=", rd32(0x01d84034UL),
+                    "HCS=", rd32(0x01d84030UL));
+    con_hex2("UFS", "RSR=", rd32(0x01d84060UL),
+                    "DBR=", rd32(0x01d84058UL));
+
+    __asm__ volatile("dsb sy" ::: "memory");
+
+    for (;;)
+        __asm__ volatile("wfe");
+#endif
 	struct mmu_info mi;
 
 	/* An xnu payload in the ramdisk means: boot it (MMU stays off). */

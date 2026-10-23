@@ -1,0 +1,218 @@
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -15,7 +15,7 @@
+ /*
+- * SWEET SE7 FIFO I2C / GT9896 Yellowstone / Focaltech 54:52 bring-up.
++ * Davinci GT9886 (Normandy), derived from the Sweet SE7 GENI I2C driver.
+  * Call once after the scheduler is running; all work runs on one thread.
+- * Requires ABL-loaded GENI I2C firmware; votes L11C through sweet_rpmh.c.
+- * No firmware/config upload or direct PMIC writes. Only IC data write:
+- * zero to GT9896's event status after reading a report. See touch2/report.md.
++ * Requires ABL-loaded GENI I2C firmware and a verified L6C RPMh vote.
++ * No firmware/config upload or direct PMIC writes. Only controller write:
++ * zero to GT9886's event status after reading a valid report.
+  */
+@@ -39,2 +39,7 @@
+ #define TOUCH_FTS        2
++#define TOUCH_GT9886     3
++#define GT9886_PID_REG   0x4535u
++#define GT9886_EVENT_REG 0x4100u
++#define GT9886_HEAD_LEN  2u
++#define GT9886_POINT_LEN 8u
+ /* GT9896 is Yellowstone in Xiaomi sweet-r-oss, not the Berlin protocol. */
+@@ -61,3 +66,84 @@
+ 
++
++/* Goodix GT9886 Normandy: 2-byte header + 8 bytes/contact + 2 checksum.
++ * Unlike GT9896 Yellowstone, the checksum covers the entire event packet.
++ * No firmware/config request or controller memory write is attempted. */
++static int
++touch_gt9886_ack(void)
++{
++	const uint8_t ack[3] = {0x41, 0x00, 0};
++	return touch_msg(0x5d, ack, sizeof(ack), NULL, 0, false);
++}
++
++static bool
++touch_gt9886_checksum(const uint8_t *buf, unsigned len)
++{
++	if (len < GT9886_HEAD_LEN + 2u || len > 84u) {
++		return false;
++	}
++	uint8_t sum = 0;
++	for (unsigned i = 0; i < len; ++i) {
++		sum = (uint8_t)(sum + buf[i]);
++	}
++	return sum == 0;
++}
++
++static int
++touch_gt9886(void)
++{
++	uint8_t buf[GT9886_HEAD_LEN + TOUCH_MAX * GT9886_POINT_LEN + 2u] = {0};
++	int x[TOUCH_MAX] = {0}, y[TOUCH_MAX] = {0};
++	uint32_t mask = 0;
++	/* The 12-byte initial read includes the first contact and its checksum.
++	 * For n>1, those two checksum bytes are part of the next contact and
++	 * the actual checksum is at the end of the complete frame. */
++	int err = touch_read(0x5d, GT9886_EVENT_REG, true, buf, 12u);
++	if (err) {
++		return err;
++	}
++	if (!buf[0]) {
++		return 0; /* no new event; retain previous active contacts */
++	}
++	if (!(buf[0] & 0x80u)) {
++		return (buf[0] & 0x40u) ? ENOTSUP : 0;
++	}
++	unsigned n = buf[1] & 15u;
++	if (n > TOUCH_MAX) {
++		(void)touch_gt9886_ack();
++		return EIO;
++	}
++	if (n > 1u) {
++		err = touch_read(0x5d, GT9886_EVENT_REG + 12u, true,
++		    buf + 12u, (n - 1u) * GT9886_POINT_LEN);
++		if (err) {
++			return err;
++		}
++	}
++	if (n && !touch_gt9886_checksum(buf,
++	    GT9886_HEAD_LEN + n * GT9886_POINT_LEN + 2u)) {
++		(void)touch_gt9886_ack();
++		return EIO;
++	}
++	for (unsigned i = 0; i < n; ++i) {
++		const uint8_t *p = buf + GT9886_HEAD_LEN + i * GT9886_POINT_LEN;
++		unsigned id = p[0];
++		unsigned px = (unsigned)p[1] | ((unsigned)p[2] << 8);
++		unsigned py = (unsigned)p[3] | ((unsigned)p[4] << 8);
++		if (id >= TOUCH_MAX || (mask & (1u << id)) ||
++		    px >= 1080u || py >= 2340u) {
++			(void)touch_gt9886_ack();
++			return EIO;
++		}
++		mask |= 1u << id;
++		x[id] = (int)px;
++		y[id] = (int)py;
++	}
++	err = touch_gt9886_ack();
++	if (!err) {
++		touch_report(mask, x, y);
++	}
++	return err;
++}
++
+ static int
+ touch_focaltech(void)
+@@ -80,43 +166,41 @@
+ 	}
+-	printf("SWEET TOUCH: TLMM reset=%#x irq=%#x vdd90=%#x; voting L11C through RPMh\n",
+-	    touch_rd(st.gpio, TOUCH_GPIO_IO(8)), touch_rd(st.gpio, TOUCH_GPIO_IO(9)),
+-	    touch_rd(st.gpio, TOUCH_GPIO_IO(90)));
+-	/* Keep the IC in reset while its rails settle; IRQ stays an input. */
+-	touch_gpio(9, 0, 3, 3, false, false); /* IRQ input, 8 mA, pull-up */
+-	touch_gpio(8, 0, 3, 3, true, false);
+-	int power_error = sweet_rpmh_vreg_enable("ldoc11", 3200);
++	printf("DAVINCI TOUCH: reset=%#x irq=%#x; L6C RPMh 3000 mV (GPIO90 untouched)\n",
++	    touch_rd(st.gpio, TOUCH_GPIO_IO(8)), touch_rd(st.gpio, TOUCH_GPIO_IO(9)));
++	/* Davinci GPIO90 is the pop-up camera motor enable: never read/configure it.
++	 * Keep GT9886 reset asserted during regulator initialization. */
++	touch_gpio(9, 0, 3, 3, false, false); /* IRQ input */
++	touch_gpio(8, 0, 3, 3, true, false);  /* reset low */
++	int power_error = sweet_rpmh_vreg_enable("ldoc6", 3000);
+ 	if (power_error) {
+-		printf("SWEET TOUCH: L11C RPMh enable failed %d; probes skipped\n", power_error);
+-		goto out;
+-	}
+-	touch_gpio(90, 0, 0, 0, true, true); /* board digital power enable */
+-	touch_wait(10); /* conservative rail settling; not a DT timing value */
+-	touch_gpio(6, 1, 0, 0, false, false); /* qup11 SDA/SCL, 2 mA */
++		printf("DAVINCI TOUCH: L6C RPMh enable failed %d; probes skipped\n", power_error);
++		goto out;
++	}
++	/* Linux GT9886 requires a substantial analog supply settling interval. */
++	touch_wait(300);
++	touch_gpio(6, 1, 0, 0, false, false); /* SE7 SDA/SCL */
+ 	touch_gpio(7, 1, 0, 0, false, false);
+-	/* Vendor GT9896 dev_confirm: reset low 2 ms, then high. */
+-	touch_gpio(8, 0, 3, 3, true, false);
+-	touch_wait(2);
+-	touch_gpio(8, 0, 3, 3, true, true);
+-	touch_wait(300); /* exceeds vendor 5 ms test + 95 ms post-test wait */
+-	uint8_t gid[32], legacy[32], fid1 = 0, fid2 = 0;
++	touch_gpio(8, 0, 3, 3, true, true);  /* release reset */
++	touch_wait(105); /* >=5 ms dev-confirm + 100 ms firmware boot */
++	/* Probe only GT9886: no unrelated I2C address or legacy register scans. */
++	uint8_t gid[32];
+ 	st.probing = true;
+-	int ge = touch_probe_info(GOODIX_PID_REG, gid);
+-	printf("SWEET TOUCH: probe 0x5d err=%d pid=%02x%02x%02x%02x fw=%02x.%02x.%02x.%02x irq=%#x\n",
+-	    ge, gid[0], gid[1], gid[2], gid[3], gid[8], gid[9], gid[10], gid[11], st.irq_status);
+-	(void)touch_probe_info(0x8240, legacy);
+-	int fe1 = touch_read(0x38, 0xa3, false, &fid1, 1);
+-	int fe2 = touch_read(0x38, 0x9f, false, &fid2, 1);
+-	printf("SWEET TOUCH: probe 0x38 err=%d/%d chip-id=%02x:%02x irq=%#x\n",
+-	    fe1, fe2, fid1, fid2, st.irq_status);
++	int ge = touch_probe_info(GT9886_PID_REG, gid);
+ 	st.probing = false;
+-	bool goodix = !ge && gid[0] == '9' && gid[1] == '8' && gid[2] == '9' && gid[3] == '6';
+-	bool fts = !fe1 && !fe2 && fid1 == 0x54 && fid2 == 0x52;
+-	if (st.dead || goodix == fts) {
+-		printf("SWEET TOUCH: no unique supported IC (goodix=%d fts=%d dead=%d); stopping\n",
+-		    goodix, fts, st.dead);
+-		goto out;
+-	}
+-	st.kind = goodix ? TOUCH_GOODIX : TOUCH_FTS;
+-	printf("SWEET TOUCH: selected %s, 1080x2400, poll=10ms irq-hint=%d\n",
+-	    goodix ? "GT9896 Yellowstone" : "Focaltech 54:52", st.irq_hint);
++	printf("DAVINCI TOUCH: GT9886 probe err=%d pid=%02x%02x%02x%02x fw=%02x.%02x.%02x.%02x\n",
++	    ge, gid[0], gid[1], gid[2], gid[3], gid[8], gid[9], gid[10], gid[11]);
++	if (st.dead || ge || gid[0] != '9' || gid[1] != '8' ||
++	    gid[2] != '8' || gid[3] != '6') {
++		printf("DAVINCI TOUCH: GT9886 not identified; no event writes\n");
++		goto out;
++	}
++	printf("DAVINCI TOUCH: GT9886 Normandy identified\n");
++	/* Boot-time safety gate: default to PID probe only. */
++	int probe_only = 1;
++	(void)PE_parse_boot_argn("davinci_touch_probeonly", &probe_only, sizeof(probe_only));
++	if (probe_only) {
++		printf("DAVINCI TOUCH: probe-only completed; events disabled\n");
++		goto out;
++	}
++	st.kind = TOUCH_GT9886;
++	printf("DAVINCI TOUCH: 1080x2340 touch polling enabled\n");
+ 	unsigned errors = 0, ticks = 0;
+@@ -138,3 +222,4 @@
+ 		    (++ticks % 10u) == 0) {
+-			int err = st.kind == TOUCH_GOODIX ? touch_goodix() : touch_focaltech();
++			int err = st.kind == TOUCH_GT9886 ? touch_gt9886() :
++			    (st.kind == TOUCH_GOODIX ? touch_goodix() : touch_focaltech());
+ 			if (err) {
+--- a/bsd/dev/sweet_rpmh.c
++++ b/bsd/dev/sweet_rpmh.c
+@@ -15,3 +15,3 @@
+ /*
+- * SWEET PM6150L L11C bring-up; see report.md for DT and source evidence.
++ * Davinci PM6150L L6C touchscreen supply, based on Sweet RPMh client.
+  * Sole XNU apps-DRV owner, called from thread context with deep idle disabled.
+@@ -34,3 +34,3 @@
+ 			    (rh_read(rh_tcs, b + RH_ADDR + c * RH_CMD_STRIDE) & ~15u) == address) {
+-				printf("SWEET RPMH: conflicting inherited L11C request in TCS%u\n", t);
++				printf("DAVINCI RPMH: conflicting inherited L6C request in TCS%u\n", t);
+ 				return EBUSY;
+@@ -51,3 +51,3 @@
+ 	rh_poisoned = false;
+-	printf("SWEET RPMH: L11C ACTIVE vote complete (rail voltage requires hardware verification)\n");
++	printf("DAVINCI RPMH: L6C ACTIVE vote complete (rail voltage requires hardware verification)\n");
+ 	return 0;
+@@ -69,5 +69,5 @@
+ {
+-	/* Board-specific helper: do not apply PMIC5-LDO policy to arbitrary resources. */
+-	if (!res || strcmp(res, "ldoc11") || mv < 2950 || mv > 3400) {
+-		printf("SWEET RPMH: expected ldoc11 and 2950..3400 mV\n");
++	/* Davinci touch AVDD is PM6150L L6C. Never allow arbitrary RPMh votes. */
++	if (!res || strcmp(res, "ldoc6") || mv != 3000) {
++		printf("DAVINCI RPMH: expected ldoc6 at exactly 3000 mV\n");
+ 		return EINVAL;
